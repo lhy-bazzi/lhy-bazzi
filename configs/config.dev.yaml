@@ -1,0 +1,11 @@
+# Development environment overrides
+debug: true
+
+server:
+  workers: 1
+
+embedding:
+  device: "cpu"             # Dev usually has no GPU
+
+reranker:
+  device: "cpu"

@@ -1,0 +1,35 @@
+# Test environment overrides
+# Used when UNI_AI_ENV=test
+debug: true
+
+server:
+  workers: 1
+
+database:
+  url: "postgresql+asyncpg://postgres:postgres@localhost:5432/uni_ai_test"
+  pool_size: 5
+  max_overflow: 2
+
+redis:
+  url: "redis://localhost:6379/1"   # DB 1 — isolated from dev
+
+milvus:
+  collection: "knowledge_chunks_test"
+
+elasticsearch:
+  index_prefix: "uni_ai_test_"
+
+embedding:
+  device: "cpu"
+  batch_size: 8
+
+reranker:
+  device: "cpu"
+  top_k: 5
+
+retrieval:
+  rerank: false     # Disable reranker in tests to speed up
+
+qa:
+  max_iterations: 1
+  stream: false

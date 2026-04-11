@@ -1,0 +1,123 @@
+version: "3.8"
+
+# Infrastructure services shared with the Java backend.
+# Run: docker compose -f docker/docker-compose.infra.yml up -d
+
+services:
+  # ---- PostgreSQL ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: uni-ai-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: uni_ai
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - uni-ai-net
+
+  # ---- Redis ----
+  redis:
+    image: redis:7-alpine
+    container_name: uni-ai-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - uni-ai-net
+
+  # ---- MinIO (Object Storage) ----
+  minio:
+    image: minio/minio:latest
+    container_name: uni-ai-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - uni-ai-net
+
+  # ---- RabbitMQ ----
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: uni-ai-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - uni-ai-net
+
+  # ---- Elasticsearch ----
+  elasticsearch:
+    image: elasticsearch:8.14.0
+    container_name: uni-ai-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - uni-ai-net
+
+  # ---- Milvus (Standalone) ----
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.16
+    container_name: uni-ai-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    networks:
+      - uni-ai-net
+
+  milvus:
+    image: milvusdb/milvus:2.4-latest
+    container_name: uni-ai-milvus
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    depends_on:
+      - etcd
+      - minio
+    networks:
+      - uni-ai-net
+
+volumes:
+  pg_data:
+  redis_data:
+  minio_data:
+  rabbitmq_data:
+  es_data:
+  etcd_data:
+  milvus_data:
+
+networks:
+  uni-ai-net:
+    driver: bridge

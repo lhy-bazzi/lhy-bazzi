@@ -1,0 +1,125 @@
+# UniAI Python AI Service - Main Configuration
+# Environment-specific overrides: config.dev.yaml / config.prod.yaml
+# Environment variables override all (prefix: UNI_AI__, delimiter: __)
+
+app_name: "uni-ai-python"
+app_version: "1.0.0"
+debug: false
+
+# ---- Server ----
+server:
+  host: "0.0.0.0"
+  port: 8100
+  workers: 4
+
+# ---- PostgreSQL ----
+database:
+  url: "postgresql+asyncpg://postgres:postgres@localhost:5432/uni_ai"
+  pool_size: 20
+  max_overflow: 10
+  pool_timeout: 30
+  pool_recycle: 1800
+
+# ---- MinIO (Object Storage) ----
+minio:
+  endpoint: "localhost:9000"
+  access_key: "minioadmin"
+  secret_key: "minioadmin"
+  bucket: "uni-ai-docs"
+  secure: false
+
+# ---- Redis ----
+redis:
+  url: "redis://localhost:6379/0"
+  prefix: "uni_ai:"
+
+# ---- Milvus (Vector Database) ----
+milvus:
+  host: "localhost"
+  port: 19530
+  collection: "knowledge_chunks"
+
+# ---- Elasticsearch ----
+elasticsearch:
+  hosts:
+    - "http://localhost:9200"
+  index_prefix: "uni_ai_"
+  analyzer: "ik_max_word"
+
+# ---- RabbitMQ ----
+mq:
+  url: "amqp://guest:guest@localhost:5672/"
+  parse_queue: "doc_parse_queue"
+
+# ---- LLM ----
+llm:
+  provider: "litellm"
+  default_model: "openai/qwen-max"
+  models:
+    - name: "openai/qwen-max"
+      api_key: "${DASHSCOPE_API_KEY}"
+      api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    - name: "deepseek/deepseek-chat"
+      api_key: "${DEEPSEEK_API_KEY}"
+    - name: "openai/gpt-4o"
+      api_key: "${OPENAI_API_KEY}"
+    - name: "anthropic/claude-sonnet-4-20250514"
+      api_key: "${ANTHROPIC_API_KEY}"
+  temperature: 0.1
+  max_tokens: 4096
+
+# ---- DashScope ----
+dashscope:
+  api_key: "${DASHSCOPE_API_KEY}"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  default_model: "qwen-max"
+  embedding_model: "text-embedding-v3"
+
+# ---- Embedding Model ----
+embedding:
+  model: "text-embedding-v3"   # DashScope online model (no local GPU needed)
+  device: "cpu"
+  batch_size: 25               # DashScope max 25 texts per request
+  dimension: 1024
+  normalize: true
+  cache_ttl: 604800            # 7 days
+
+# ---- Reranker Model ----
+reranker:
+  model: "gte-rerank"
+  device: "cpu"
+  top_k: 10
+
+# ---- Document Parsing ----
+parsing:
+  pdf:
+    primary_engine: "pymupdf"
+    fallback_engine: ""
+    quality_threshold: 0.6
+    max_pages: 500
+    enable_ocr: true
+    enable_table: true
+    enable_formula: true
+  chunk:
+    size: 512
+    overlap: 64
+    min_size: 128
+    max_size: 1024
+    parent_size: 2048
+
+# ---- Retrieval ----
+retrieval:
+  mode: "hybrid"            # hybrid / vector_only / fulltext_only
+  vector_weight: 0.4
+  sparse_weight: 0.3
+  bm25_weight: 0.3
+  top_k: 10
+  rerank: true
+  enable_hyde: true
+
+# ---- QA ----
+qa:
+  default_mode: "auto"      # auto / simple / deep
+  max_iterations: 3
+  stream: true
+  max_chat_history: 10

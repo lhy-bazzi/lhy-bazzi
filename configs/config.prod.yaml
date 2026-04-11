@@ -1,0 +1,16 @@
+# Production environment overrides
+debug: false
+
+server:
+  workers: 8
+
+database:
+  pool_size: 50
+  max_overflow: 20
+
+embedding:
+  device: "cuda"
+  batch_size: 64
+
+reranker:
+  device: "cuda"

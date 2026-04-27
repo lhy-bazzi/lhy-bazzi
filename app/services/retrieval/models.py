@@ -18,6 +18,8 @@ class RetrievedChunk:
     parent_content: Optional[str] = None
     doc_name: Optional[str] = None
     page: Optional[int] = None
+    source_leg: Optional[str] = None
+    highlight: Optional[str] = None
 
 
 @dataclass

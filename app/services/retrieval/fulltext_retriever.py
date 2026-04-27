@@ -15,6 +15,16 @@ class FulltextRetriever:
     def __init__(self, es_client):
         self.es = es_client
 
+    @staticmethod
+    def _pick_highlight(highlight: dict | None) -> str | None:
+        if not highlight:
+            return None
+        if isinstance(highlight.get("content"), list) and highlight["content"]:
+            return str(highlight["content"][0])
+        if isinstance(highlight.get("heading_chain"), list) and highlight["heading_chain"]:
+            return str(highlight["heading_chain"][0])
+        return None
+
     async def retrieve(
         self,
         query: str,
@@ -25,7 +35,13 @@ class FulltextRetriever:
 
         kb_ids = (filter_dict or {}).get("kb_ids")
         doc_ids = (filter_dict or {}).get("doc_ids")
-        hits = await ec.search_bm25(query=query, top_k=top_k, kb_ids=kb_ids, doc_ids=doc_ids)
+        hits = await ec.search_bm25(
+            query=query,
+            top_k=top_k,
+            kb_ids=kb_ids,
+            doc_ids=doc_ids,
+            with_highlight=True,
+        )
         logger.debug("FulltextRetriever: {} hits", len(hits))
         return [
             RetrievedChunk(
@@ -36,6 +52,8 @@ class FulltextRetriever:
                 heading_chain=h.get("heading_chain", ""),
                 chunk_type=h.get("chunk_type", "text"),
                 score=float(h.get("score", 0.0)),
+                source_leg="bm25",
+                highlight=self._pick_highlight(h.get("highlight")),
             )
             for h in hits
         ]

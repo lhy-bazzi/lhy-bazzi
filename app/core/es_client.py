@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from elasticsearch import AsyncElasticsearch, NotFoundError
@@ -11,6 +12,37 @@ from loguru import logger
 from app.config import get_settings
 
 _es: AsyncElasticsearch | None = None
+_DEFAULT_QUERY_TERM_LIMIT = 10
+_FALLBACK_STOPWORDS = {
+    "的",
+    "了",
+    "和",
+    "及",
+    "与",
+    "是",
+    "在",
+    "对",
+    "及其",
+    "请",
+    "一下",
+    "一个",
+    "这个",
+    "那个",
+    "关于",
+    "如何",
+    "what",
+    "which",
+    "when",
+    "where",
+    "how",
+    "the",
+    "is",
+    "are",
+    "a",
+    "an",
+    "to",
+    "of",
+}
 
 # ---------------------------------------------------------------------------
 # Index mapping  (mirrors tech-design §5.2)
@@ -128,6 +160,7 @@ async def search_bm25(
     top_k: int = 20,
     kb_ids: Optional[list[str]] = None,
     doc_ids: Optional[list[str]] = None,
+    with_highlight: bool = True,
 ) -> list[dict]:
     """BM25 full-text search with optional permission filters."""
     must_clause: list[dict] = [
@@ -153,12 +186,85 @@ async def search_bm25(
         },
         "size": top_k,
     }
+    if with_highlight:
+        body["highlight"] = {
+            "pre_tags": ["<em>"],
+            "post_tags": ["</em>"],
+            "fields": {
+                "content": {"number_of_fragments": 1, "fragment_size": 140},
+                "heading_chain": {"number_of_fragments": 1, "fragment_size": 80},
+            },
+        }
 
     resp = await get_es().search(index=_index_name(), body=body)
     return [
-        {**hit["_source"], "score": hit["_score"]}
+        {
+            **hit["_source"],
+            "score": hit["_score"],
+            "highlight": hit.get("highlight", {}),
+        }
         for hit in resp["hits"]["hits"]
     ]
+
+
+def _fallback_extract_terms(query: str, limit: int = _DEFAULT_QUERY_TERM_LIMIT) -> list[str]:
+    # Chinese spans + alnum terms as fallback when ES analyze API is unavailable.
+    raw_terms = re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9][A-Za-z0-9_\-]{1,}", query or "")
+    seen: set[str] = set()
+    terms: list[str] = []
+    for term in raw_terms:
+        token = term.strip()
+        token_low = token.lower()
+        if not token:
+            continue
+        if token_low in _FALLBACK_STOPWORDS:
+            continue
+        if token_low in seen:
+            continue
+        seen.add(token_low)
+        terms.append(token)
+        if len(terms) >= limit:
+            break
+    return terms
+
+
+async def extract_query_terms(
+    query: str,
+    *,
+    limit: int = _DEFAULT_QUERY_TERM_LIMIT,
+) -> list[str]:
+    """Extract representative query terms using ES analyzer with regex fallback."""
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    try:
+        # Let ES decide analyzer from index mapping/settings for realistic term extraction.
+        resp = await get_es().indices.analyze(index=_index_name(), body={"text": q})
+        tokens = [t.get("token", "") for t in resp.get("tokens", [])]
+        seen: set[str] = set()
+        terms: list[str] = []
+        for token in tokens:
+            word = token.strip()
+            word_low = word.lower()
+            if not word:
+                continue
+            if len(word) == 1 and not re.match(r"[A-Za-z0-9]", word):
+                continue
+            if word_low in _FALLBACK_STOPWORDS:
+                continue
+            if word_low in seen:
+                continue
+            seen.add(word_low)
+            terms.append(word)
+            if len(terms) >= limit:
+                break
+        if terms:
+            return terms
+    except Exception as exc:
+        logger.debug("ES analyze terms failed, fallback to regex tokenizer: {}", exc)
+
+    return _fallback_extract_terms(q, limit=limit)
 
 
 async def delete_by_doc_id(doc_id: str) -> int:

@@ -214,6 +214,103 @@ class QAEngine:
         return out
 
     @staticmethod
+    def _preview_items(items: Any, limit: int = 3) -> list[dict[str, Any]]:
+        if not isinstance(items, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            normalized.append(
+                {
+                    "source": item.get("source"),
+                    "chunk_id": item.get("chunk_id"),
+                    "doc_id": item.get("doc_id"),
+                    "doc_name": item.get("doc_name"),
+                    "page": item.get("page"),
+                    "heading_chain": item.get("heading_chain"),
+                    "score": item.get("score"),
+                    "snippet": item.get("snippet"),
+                    "snippet_highlight": item.get("snippet_highlight"),
+                }
+            )
+            if len(normalized) >= limit:
+                break
+        return normalized
+
+    @classmethod
+    def _build_retrieval_explain(
+        cls,
+        debug: dict[str, Any],
+        *,
+        item_limit: int = 3,
+    ) -> dict[str, Any]:
+        keywords_raw = debug.get("es_keywords", [])
+        keywords = [str(k) for k in keywords_raw if isinstance(k, (str, int, float))]
+        keywords = keywords[:10]
+
+        es_hits = cls._preview_items(debug.get("bm25_preview"), limit=item_limit)
+        vector_hits = cls._preview_items(debug.get("vector_preview"), limit=item_limit)
+        if not vector_hits:
+            dense_hits = cls._preview_items(debug.get("dense_preview"), limit=item_limit)
+            sparse_hits = cls._preview_items(debug.get("sparse_preview"), limit=item_limit)
+            dense_ids = {d.get("chunk_id") for d in dense_hits}
+            merged_vector_hits = dense_hits + [
+                h for h in sparse_hits if h.get("chunk_id") not in dense_ids
+            ]
+            vector_hits = merged_vector_hits[:item_limit]
+
+        selected = cls._preview_items(
+            debug.get("selected_evidence_preview") or debug.get("final_preview"),
+            limit=item_limit,
+        )
+        fused = cls._preview_items(debug.get("fused_preview"), limit=item_limit)
+        reranked = cls._preview_items(debug.get("reranked_preview"), limit=item_limit)
+
+        counts = {
+            "dense_hits": int(debug.get("dense_count", 0) or 0),
+            "sparse_hits": int(debug.get("sparse_count", 0) or 0),
+            "bm25_hits": int(debug.get("bm25_count", 0) or 0),
+            "fused_count": int(debug.get("fused_count", 0) or 0),
+            "reranked_count": int(debug.get("reranked_count", 0) or 0),
+            "after_permission_count": int(debug.get("after_permission_count", 0) or 0),
+        }
+        return {
+            "keywords": keywords,
+            "es_hits": es_hits,
+            "vector_hits": vector_hits,
+            "fused_hits": fused,
+            "reranked_hits": reranked,
+            "selected_evidence": selected,
+            "counts": counts,
+            "pipeline": debug.get("pipeline", {}),
+        }
+
+    @classmethod
+    def _build_query_retrieval_profile(
+        cls,
+        trace: dict[str, Any],
+        *,
+        item_limit: int = 2,
+    ) -> dict[str, Any]:
+        debug = trace.get("debug") or {}
+        explain = cls._build_retrieval_explain(debug, item_limit=item_limit)
+        return {
+            "query": trace.get("query_preview", ""),
+            "latency_ms": trace.get("latency_ms", 0),
+            "total_retrieved": trace.get("total_retrieved", 0),
+            "final_count": trace.get("final_count", 0),
+            "dense_hits": explain["counts"]["dense_hits"],
+            "sparse_hits": explain["counts"]["sparse_hits"],
+            "bm25_hits": explain["counts"]["bm25_hits"],
+            "fused_count": explain["counts"]["fused_count"],
+            "keywords": explain["keywords"][:8],
+            "es_hits": explain["es_hits"],
+            "vector_hits": explain["vector_hits"],
+            "selected_evidence": explain["selected_evidence"],
+        }
+
+    @staticmethod
     def _quality_grade(quality: dict[str, Any]) -> str:
         if not quality:
             return "unknown"
@@ -463,20 +560,30 @@ class QAEngine:
             kb_ids=kb_ids,
             config=retrieval_cfg,
         )
+        debug = result.debug or {}
+        retrieval_explain = self._build_retrieval_explain(debug, item_limit=3)
         yield ChatStreamEvent(
             event="retrieval",
             data={
+                "request_id": request_id,
+                "mode": "simple_rag",
+                "query": self._preview_text(plan.primary_query, 200),
                 "count": len(result.chunks),
                 "latency_ms": result.latency_ms,
                 "chunks": [
                     {"chunk_id": c.chunk_id, "score": c.score, "doc_name": c.doc_name}
                     for c in result.chunks[:5]
                 ],
+                "retrieval_explain": retrieval_explain,
+                # Backward-compatible + frontend-friendly aliases
+                "keywords": retrieval_explain["keywords"],
+                "es_hits": retrieval_explain["es_hits"],
+                "vector_hits": retrieval_explain["vector_hits"],
+                "selected_evidence": retrieval_explain["selected_evidence"],
             },
         )
 
         if trace_enabled:
-            debug = result.debug or {}
             top_sources = self._top_sources_from_retrieved_chunks(result.chunks, limit=3)
             trace_metrics = {
                 "latency_ms": result.latency_ms,
@@ -488,13 +595,28 @@ class QAEngine:
                 "reranked_count": debug.get("reranked_count", 0),
                 "after_permission_count": debug.get("after_permission_count", len(result.chunks)),
             }
+            if retrieval_explain["keywords"]:
+                trace_metrics["es_keywords"] = retrieval_explain["keywords"][:10]
             if trace_level == "pro" and top_sources:
                 trace_metrics["top_sources"] = top_sources
+            if trace_level == "pro":
+                trace_metrics["es_hits_preview"] = retrieval_explain["es_hits"]
+                trace_metrics["vector_hits_preview"] = retrieval_explain["vector_hits"]
+                trace_metrics["selected_evidence_preview"] = retrieval_explain["selected_evidence"]
+                trace_metrics["fused_hits_preview"] = retrieval_explain["fused_hits"]
+                trace_metrics["pipeline"] = retrieval_explain["pipeline"]
+
+            keyword_count = len(retrieval_explain["keywords"])
+            detail = (
+                f"已提取 {keyword_count} 个关键词进行检索，完成向量与全文融合，最终保留 {len(result.chunks)} 条高置信证据。"
+                if keyword_count > 0
+                else f"已完成向量与全文融合检索，最终保留 {len(result.chunks)} 条高置信证据。"
+            )
             yield self._build_trace_event(
                 request_id=request_id,
                 step="retrieve",
                 title="混合检索完成",
-                detail="已完成多路召回、融合与权限过滤，正在生成答案。",
+                detail=detail,
                 metrics=trace_metrics,
                 level=trace_level,
                 phase="retrieval",
@@ -508,9 +630,10 @@ class QAEngine:
                 ),
                 tags=["dense", "sparse", "bm25", "rerank"],
                 summary_cards=[
-                    {"label": "检索轮次", "value": 1},
-                    {"label": "有效证据", "value": len(result.chunks)},
-                    {"label": "检索耗时", "value": f"{result.latency_ms} ms"},
+                    {"label": "关键词数", "value": keyword_count},
+                    {"label": "ES命中", "value": debug.get("bm25_count", 0)},
+                    {"label": "向量命中", "value": int(debug.get("dense_count", 0)) + int(debug.get("sparse_count", 0))},
+                    {"label": "最终证据", "value": len(result.chunks)},
                 ],
             )
 
@@ -672,7 +795,83 @@ class QAEngine:
             if node_name == "retriever":
                 ctx_count = len(node_output.get("retrieved_contexts") or [])
                 traces = node_output.get("retrieval_traces") or []
-                yield ChatStreamEvent(event="retrieval", data={"node": node_name, "new_contexts": ctx_count})
+                round_payloads: list[dict[str, Any]] = []
+                aggregate_keywords: list[str] = []
+                seen_keywords: set[str] = set()
+                aggregate_es_hits: list[dict[str, Any]] = []
+                aggregate_vector_hits: list[dict[str, Any]] = []
+                aggregate_selected: list[dict[str, Any]] = []
+                seen_es_chunks: set[str] = set()
+                seen_vector_chunks: set[str] = set()
+                seen_selected_chunks: set[str] = set()
+
+                for trace in traces:
+                    profile = self._build_query_retrieval_profile(
+                        trace,
+                        item_limit=2 if trace_level == "pro" else 1,
+                    )
+                    if trace_level == "pro":
+                        round_payloads.append(profile)
+                    else:
+                        round_payloads.append(
+                            {
+                                "query": profile["query"],
+                                "latency_ms": profile["latency_ms"],
+                                "final_count": profile["final_count"],
+                                "keywords": profile["keywords"][:5],
+                            }
+                        )
+
+                    for kw in profile.get("keywords", []):
+                        kw_s = str(kw).strip()
+                        if not kw_s or kw_s in seen_keywords:
+                            continue
+                        seen_keywords.add(kw_s)
+                        aggregate_keywords.append(kw_s)
+                        if len(aggregate_keywords) >= 12:
+                            break
+
+                    for hit in profile.get("es_hits", []):
+                        cid = hit.get("chunk_id")
+                        if not cid or cid in seen_es_chunks:
+                            continue
+                        seen_es_chunks.add(cid)
+                        aggregate_es_hits.append(hit)
+                        if len(aggregate_es_hits) >= 4:
+                            break
+
+                    for hit in profile.get("vector_hits", []):
+                        cid = hit.get("chunk_id")
+                        if not cid or cid in seen_vector_chunks:
+                            continue
+                        seen_vector_chunks.add(cid)
+                        aggregate_vector_hits.append(hit)
+                        if len(aggregate_vector_hits) >= 4:
+                            break
+
+                    for hit in profile.get("selected_evidence", []):
+                        cid = hit.get("chunk_id")
+                        if not cid or cid in seen_selected_chunks:
+                            continue
+                        seen_selected_chunks.add(cid)
+                        aggregate_selected.append(hit)
+                        if len(aggregate_selected) >= 4:
+                            break
+
+                yield ChatStreamEvent(
+                    event="retrieval",
+                    data={
+                        "request_id": request_id,
+                        "node": node_name,
+                        "new_contexts": ctx_count,
+                        "query_rounds": len(traces),
+                        "rounds": round_payloads[:6],
+                        "keywords": aggregate_keywords[:12],
+                        "es_hits": aggregate_es_hits[:4],
+                        "vector_hits": aggregate_vector_hits[:4],
+                        "selected_evidence": aggregate_selected[:4],
+                    },
+                )
 
                 if trace_enabled:
                     dense_hits = 0
@@ -687,16 +886,9 @@ class QAEngine:
                         bm25_hits += int(debug.get("bm25_count", 0))
                         fused += int(debug.get("fused_count", 0))
                         if trace_level == "pro":
-                            per_query_profiles.append({
-                                "query": trace.get("query_preview", ""),
-                                "latency_ms": trace.get("latency_ms", 0),
-                                "total_retrieved": trace.get("total_retrieved", 0),
-                                "final_count": trace.get("final_count", 0),
-                                "dense_hits": debug.get("dense_count", 0),
-                                "sparse_hits": debug.get("sparse_count", 0),
-                                "bm25_hits": debug.get("bm25_count", 0),
-                                "fused_count": debug.get("fused_count", 0),
-                            })
+                            per_query_profiles.append(
+                                self._build_query_retrieval_profile(trace, item_limit=2)
+                            )
 
                     metrics = {
                         "query_rounds": len(traces),
@@ -705,6 +897,7 @@ class QAEngine:
                         "sparse_hits": sparse_hits,
                         "bm25_hits": bm25_hits,
                         "fused_count": fused,
+                        "es_keywords": aggregate_keywords[:12],
                     }
                     top_sources = self._top_sources_from_state_contexts(
                         node_output.get("retrieved_contexts") or [], limit=3
@@ -713,13 +906,18 @@ class QAEngine:
                         metrics["query_profiles"] = per_query_profiles[:6]
                     if trace_level == "pro" and top_sources:
                         metrics["top_sources"] = top_sources
+                    if trace_level == "pro":
+                        metrics["es_hits_preview"] = aggregate_es_hits[:4]
+                        metrics["vector_hits_preview"] = aggregate_vector_hits[:4]
+                        metrics["selected_evidence_preview"] = aggregate_selected[:4]
 
+                    keyword_count = len(aggregate_keywords)
                     yield self._build_trace_event(
                         request_id=request_id,
                         step="retrieve",
                         title="多轮检索完成",
                         detail=(
-                            f"已完成 {len(traces)} 轮检索，新增有效证据 {ctx_count} 条。"
+                            f"已完成 {len(traces)} 轮检索，提取关键词 {keyword_count} 个，新增有效证据 {ctx_count} 条。"
                             if traces
                             else f"检索节点已执行，新增有效证据 {ctx_count} 条。"
                         ),
@@ -736,8 +934,10 @@ class QAEngine:
                         tags=["multi_query", "fusion", "permission_filter"],
                         summary_cards=[
                             {"label": "检索轮次", "value": len(traces)},
+                            {"label": "关键词数", "value": keyword_count},
+                            {"label": "ES命中", "value": bm25_hits},
+                            {"label": "向量命中", "value": dense_hits + sparse_hits},
                             {"label": "有效证据", "value": ctx_count},
-                            {"label": "Dense命中", "value": dense_hits},
                         ],
                     )
 
@@ -833,8 +1033,14 @@ class QAEngine:
                     ),
                     tags=["evaluation", "quality_gate"],
                     summary_cards=[
-                        {"label": "质量等级", "value": self._quality_grade(quality) if isinstance(quality, dict) else "unknown"},
-                        {"label": "是否通过", "value": bool(quality.get("passed", True)) if isinstance(quality, dict) else True},
+                        {
+                            "label": "质量等级",
+                            "value": self._quality_grade(quality) if isinstance(quality, dict) else "unknown",
+                        },
+                        {
+                            "label": "是否通过",
+                            "value": bool(quality.get("passed", True)) if isinstance(quality, dict) else True,
+                        },
                     ],
                 )
 

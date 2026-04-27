@@ -307,6 +307,52 @@ error      # 异常
 }
 ```
 
+`retrieval` 事件（可解释检索核心字段）：
+
+```json
+{
+  "request_id": "a1b2c3d4e5f6",
+  "mode": "simple_rag",
+  "query": "公司年假政策 标准 请假 结转",
+  "count": 5,
+  "latency_ms": 183,
+  "retrieval_explain": {
+    "keywords": ["年假", "政策", "请假", "结转"],
+    "es_hits": [
+      {
+        "source": "bm25",
+        "chunk_id": "c1",
+        "doc_name": "员工手册.pdf",
+        "score": 0.88,
+        "snippet": "员工在转正后可享受年度带薪年假...",
+        "snippet_highlight": "<em>年假</em>按自然年计算..."
+      }
+    ],
+    "vector_hits": [
+      {
+        "source": "dense",
+        "chunk_id": "c8",
+        "doc_name": "HR制度汇编.pdf",
+        "score": 0.91,
+        "snippet": "带薪休假按入职年限分段..."
+      }
+    ],
+    "selected_evidence": [
+      {
+        "source": "final",
+        "chunk_id": "c1",
+        "doc_name": "员工手册.pdf",
+        "score": 0.95,
+        "snippet": "年假可按公司制度进行结转..."
+      }
+    ]
+  }
+}
+```
+
+更多字段（deep 模式 `rounds`、`trace.retrieve.metrics` 扩展项）详见：  
+`../docs/python-ai-service-retrieval-trace-api.md`
+
 ### 系统
 
 ```

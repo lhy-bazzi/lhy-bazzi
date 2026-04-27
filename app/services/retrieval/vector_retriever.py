@@ -9,7 +9,7 @@ from loguru import logger
 from app.services.retrieval.models import RetrievedChunk
 
 
-def _hits_to_chunks(hits: list[dict]) -> list[RetrievedChunk]:
+def _hits_to_chunks(hits: list[dict], *, source_leg: str) -> list[RetrievedChunk]:
     return [
         RetrievedChunk(
             chunk_id=h["id"],
@@ -19,6 +19,7 @@ def _hits_to_chunks(hits: list[dict]) -> list[RetrievedChunk]:
             heading_chain=h.get("heading_chain", ""),
             chunk_type=h.get("chunk_type", "text"),
             score=float(h.get("score", 0.0)),
+            source_leg=source_leg,
         )
         for h in hits
     ]
@@ -46,7 +47,7 @@ class VectorRetriever:
             filter_expr=filter_expr or None,
         )
         logger.debug("VectorRetriever: {} hits", len(hits))
-        return _hits_to_chunks(hits)
+        return _hits_to_chunks(hits, source_leg="dense")
 
 
 class SparseRetriever:
@@ -75,4 +76,4 @@ class SparseRetriever:
             filter_expr=filter_expr or None,
         )
         logger.debug("SparseRetriever: {} hits", len(hits))
-        return _hits_to_chunks(hits)
+        return _hits_to_chunks(hits, source_leg="sparse")

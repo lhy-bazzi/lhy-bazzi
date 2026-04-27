@@ -32,7 +32,45 @@ class _DummyRetriever:
             total_retrieved=3,
             retrieval_mode=config.retrieval_mode,
             latency_ms=12,
-            debug={"dense_count": 1, "sparse_count": 1, "bm25_count": 1, "fused_count": 1},
+            debug={
+                "dense_count": 1,
+                "sparse_count": 1,
+                "bm25_count": 1,
+                "fused_count": 1,
+                "reranked_count": 1,
+                "after_permission_count": 1,
+                "es_keywords": ["年假", "政策"],
+                "bm25_preview": [
+                    {
+                        "source": "bm25",
+                        "chunk_id": "chunk-1",
+                        "doc_id": "doc-1",
+                        "doc_name": "doc-a",
+                        "score": 0.88,
+                        "snippet": "命中片段",
+                    }
+                ],
+                "vector_preview": [
+                    {
+                        "source": "dense",
+                        "chunk_id": "chunk-1",
+                        "doc_id": "doc-1",
+                        "doc_name": "doc-a",
+                        "score": 0.91,
+                        "snippet": "向量命中片段",
+                    }
+                ],
+                "selected_evidence_preview": [
+                    {
+                        "source": "final",
+                        "chunk_id": "chunk-1",
+                        "doc_id": "doc-1",
+                        "doc_name": "doc-a",
+                        "score": 0.95,
+                        "snippet": "最终证据片段",
+                    }
+                ],
+            },
         )
 
 
@@ -179,6 +217,39 @@ async def test_qa_engine_emits_trace_events_when_enabled():
     assert "query_understanding" in trace_steps
     assert "route" in trace_steps
     assert "retrieve" in trace_steps
+
+
+@pytest.mark.asyncio
+async def test_simple_path_retrieval_event_contains_explainability_fields():
+    plan = SimpleNamespace(
+        original_query="q",
+        resolved_query="q",
+        rewritten_query="q",
+        intent=SimpleNamespace(value="factual"),
+        strategy="simple_rag",
+        sub_queries=[],
+        hyde_text="",
+        primary_query="q",
+    )
+    engine = _build_engine_with_plan(plan)
+
+    events = await _collect_events(
+        engine.chat(
+            query="q",
+            kb_ids=["kb1"],
+            user_id="u1",
+            chat_history=[],
+            config={"trace_enabled": True, "qa_mode": "auto"},
+            stream=True,
+        )
+    )
+    retrieval_evt = next(e for e in events if e.event == "retrieval")
+    data = retrieval_evt.data
+    assert "retrieval_explain" in data
+    assert data["retrieval_explain"]["keywords"] == ["年假", "政策"]
+    assert isinstance(data["retrieval_explain"]["es_hits"], list)
+    assert isinstance(data["retrieval_explain"]["vector_hits"], list)
+    assert isinstance(data["retrieval_explain"]["selected_evidence"], list)
 
 
 @pytest.mark.asyncio
@@ -343,3 +414,66 @@ async def test_deep_path_trace_contains_retrieval_metrics(monkeypatch):
     assert retrieve_trace.data["ui_hints"]["icon"] == "search"
     assert retrieve_trace.data["timeline"]["step_total"] >= retrieve_trace.data["timeline"]["step_index"]
     assert len(retrieve_trace.data["user_view"]["cards"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_deep_path_retrieval_event_contains_round_profiles(monkeypatch):
+    plan = SimpleNamespace(
+        original_query="q",
+        resolved_query="q",
+        rewritten_query="q",
+        intent=SimpleNamespace(value="multi_hop"),
+        strategy="multi_agent",
+        sub_queries=["q1"],
+        hyde_text="",
+        primary_query="q",
+    )
+    engine = _build_engine_with_plan(plan)
+
+    class _FakeGraph:
+        async def astream(self, initial_state):
+            yield {
+                "retriever": {
+                    "retrieved_contexts": [{"chunk_id": "c1"}],
+                    "retrieval_traces": [
+                        {
+                            "query_preview": "q1",
+                            "latency_ms": 25,
+                            "total_retrieved": 5,
+                            "final_count": 2,
+                            "debug": {
+                                "dense_count": 2,
+                                "sparse_count": 1,
+                                "bm25_count": 2,
+                                "fused_count": 3,
+                                "es_keywords": ["预算", "审批"],
+                                "bm25_preview": [{"chunk_id": "c1", "snippet": "es hit"}],
+                                "vector_preview": [{"chunk_id": "c1", "snippet": "vec hit"}],
+                                "selected_evidence_preview": [{"chunk_id": "c1", "snippet": "selected"}],
+                            },
+                        }
+                    ],
+                }
+            }
+            yield {"reasoner": {"sub_answers": [{"query": "q1", "sufficient": True}]}}
+            yield {"synthesizer": {"final_answer": "ans", "citations": []}}
+            yield {"critic": {"quality_check": {"passed": True}}}
+
+    monkeypatch.setattr(QAEngine, "_get_graph", lambda self: _FakeGraph(), raising=True)
+    events = await _collect_events(
+        engine.chat(
+            query="q",
+            kb_ids=["kb1"],
+            user_id="u1",
+            chat_history=[],
+            config={"qa_mode": "deep", "trace_enabled": True},
+            stream=True,
+        )
+    )
+    retrieval_evt = next(
+        e
+        for e in events
+        if e.event == "retrieval" and isinstance(e.data, dict) and e.data.get("node") == "retriever"
+    )
+    assert retrieval_evt.data["query_rounds"] == 1
+    assert retrieval_evt.data["rounds"][0]["keywords"] == ["预算", "审批"]

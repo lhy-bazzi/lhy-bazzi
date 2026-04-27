@@ -13,11 +13,10 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
 # Project root: uni-ai-python/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +39,7 @@ class DatabaseConfig(BaseModel):
     max_overflow: int = 10
     pool_timeout: int = 30
     pool_recycle: int = 1800
+    auto_create_tables: bool = True
 
 
 class MinioConfig(BaseModel):
@@ -75,7 +75,7 @@ class MQConfig(BaseModel):
 class LLMModelEntry(BaseModel):
     name: str
     api_key: str = ""
-    api_base: Optional[str] = None
+    api_base: str | None = None
 
 
 class LLMConfig(BaseModel):
@@ -181,6 +181,27 @@ class Settings(BaseSettings):
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Prioritize environment variables over YAML kwargs.
+
+        `get_settings()` injects YAML via init kwargs. Without this override,
+        those kwargs would mask .env / environment overrides.
+        """
+        return (
+            env_settings,
+            dotenv_settings,
+            init_settings,
+            file_secret_settings,
+        )
 
 
 # ---------------------------------------------------------------------------

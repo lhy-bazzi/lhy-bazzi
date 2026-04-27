@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import time
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -21,7 +21,7 @@ from app.services.parsing.markdown_parser import MarkdownParser
 from app.services.parsing.pdf_parser import PDFParser
 from app.services.parsing.quality import QualityAssessor
 from app.services.parsing.text_parser import TextParser
-from app.utils.exceptions import ParseError, UnsupportedFileTypeError
+from app.utils.exceptions import UnsupportedFileTypeError
 
 # Extension → FileType mapping
 _EXT_MAP: dict[str, FileType] = {
@@ -132,11 +132,12 @@ class ParseEngine:
 
     async def _download(self, object_path: str) -> str:
         """Download MinIO object to a temporary local file."""
-        ext = os.path.splitext(object_path)[1] or ""
-        tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-        tmp.close()
-        await minio_client.download_file(object_path, tmp.name)
-        return tmp.name
+        _, resolved_key = minio_client.resolve_object_location(object_path)
+        ext = os.path.splitext(resolved_key)[1] or ""
+        fd, local_path = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
+        await minio_client.download_file(object_path, local_path)
+        return local_path
 
     def _detect_file_type(self, local_path: str, declared_type: str) -> FileType:
         """Detect real file type, cross-validate against declared type."""

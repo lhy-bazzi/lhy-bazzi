@@ -12,15 +12,7 @@ from app.models.document import ParsedDocument
 from app.services.chunking.semantic_chunker import SemanticChunker
 from app.services.chunking.structural_chunker import StructuralChunker
 from app.services.chunking.table_chunker import TableChunker
-
-
-def _count_tokens(text: str) -> int:
-    try:
-        import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
-    except Exception:
-        return len(text) // 2
+from app.services.chunking.token_utils import count_tokens
 
 
 class DocumentChunker:
@@ -79,7 +71,7 @@ class DocumentChunker:
         # Assign index + token count
         for i, node in enumerate(nodes):
             node.chunk_index = i
-            node.token_count = _count_tokens(node.content)
+            node.token_count = count_tokens(node.content)
 
         # Build parent-child relationships
         self._build_parent_chunks(nodes, cfg)

@@ -11,6 +11,7 @@ def create_celery_app() -> Celery:
         "uni_ai_tasks",
         broker=settings.redis.url,          # Use Redis as broker
         backend=settings.redis.url,         # Use Redis as result backend
+        include=["app.tasks.parse_task"],   # Ensure parse task is always registered
     )
     app.conf.update(
         task_serializer="json",

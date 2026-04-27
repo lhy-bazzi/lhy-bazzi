@@ -8,6 +8,7 @@ from typing import Optional
 from app.models.chunk import ChunkConfig
 from app.models.document import DocumentElement, ParsedDocument
 from app.models.enums import ElementType
+from app.services.chunking.token_utils import count_tokens
 
 
 @dataclass
@@ -35,7 +36,7 @@ class StructuralChunker:
                     content=text,
                     chunk_type="text",
                     heading_chain=list(heading_chain),
-                    needs_semantic_split=len(text) > config.max_chunk_size * 4,
+                    needs_semantic_split=count_tokens(text) > config.max_chunk_size,
                 ))
             current_texts.clear()
 

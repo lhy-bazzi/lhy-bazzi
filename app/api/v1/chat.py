@@ -6,7 +6,6 @@ import json
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.deps import get_redis_dep
@@ -23,6 +22,23 @@ from app.services.retrieval.models import RetrievalConfig
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+_MODEL_ALIASES = {
+    "qwen-max": "openai/qwen-max",
+    "qwen-plus": "openai/qwen-plus",
+    "qwen-turbo": "openai/qwen-turbo",
+    "gpt-4o": "openai/gpt-4o",
+    "gpt-4o-mini": "openai/gpt-4o-mini",
+    "deepseek-chat": "deepseek/deepseek-chat",
+}
+
+
+def _normalize_model_id(model: str | None) -> str | None:
+    if not model:
+        return None
+    key = model.strip()
+    return _MODEL_ALIASES.get(key.lower(), key)
+
+
 def _get_qa_engine():
     from app.core.qa import get_qa_engine
     return get_qa_engine()
@@ -30,18 +46,22 @@ def _get_qa_engine():
 
 async def _event_generator(request: ChatRequest) -> AsyncGenerator[dict, None]:
     engine = _get_qa_engine()
+    chat_history = [m.model_dump() for m in request.chat_history]
     cfg = {
         "retrieval_mode": request.config.retrieval_mode.value,
+        "qa_mode": request.config.qa_mode.value,
         "top_k": request.config.top_k,
         "rerank": request.config.rerank,
-        "model": request.config.model,
+        "model": _normalize_model_id(request.config.model),
+        "trace_enabled": request.config.trace_enabled,
+        "trace_level": request.config.trace_level.value,
     }
     try:
         async for event in engine.chat(
             query=request.query,
             kb_ids=request.kb_ids,
             user_id=request.user_id,
-            chat_history=request.chat_history,
+            chat_history=chat_history,
             config=cfg,
             stream=True,
         ):
@@ -58,11 +78,15 @@ async def chat_completions(request: ChatRequest):
 
     # Non-streaming: collect all events
     engine = _get_qa_engine()
+    chat_history = [m.model_dump() for m in request.chat_history]
     cfg = {
         "retrieval_mode": request.config.retrieval_mode.value,
+        "qa_mode": request.config.qa_mode.value,
         "top_k": request.config.top_k,
         "rerank": request.config.rerank,
-        "model": request.config.model,
+        "model": _normalize_model_id(request.config.model),
+        "trace_enabled": request.config.trace_enabled,
+        "trace_level": request.config.trace_level.value,
     }
     answer_parts: list[str] = []
     citations: list[dict] = []
@@ -71,7 +95,7 @@ async def chat_completions(request: ChatRequest):
         query=request.query,
         kb_ids=request.kb_ids,
         user_id=request.user_id,
-        chat_history=request.chat_history,
+        chat_history=chat_history,
         config=cfg,
         stream=False,
     ):

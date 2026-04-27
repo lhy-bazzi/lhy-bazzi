@@ -20,12 +20,8 @@ MessageHandler = Callable[[dict], Awaitable[None]]
 
 class ParseTaskMessage(BaseModel):
     """Schema for parse-task messages sent by the Java backend."""
-    task_id: str
-    doc_id: str
-    kb_id: str
-    file_path: str
-    file_type: str
-    callback_url: Optional[str] = None
+    file_id: str
+    task_id: Optional[str] = None
 
 
 class MQConsumer:

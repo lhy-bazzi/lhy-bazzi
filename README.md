@@ -217,9 +217,13 @@ export UNI_AI_ENV=prod
 ### 文档解析
 
 ```
-POST /api/v1/parse/document
-     Body: { file_key, knowledge_id }        # MinIO 文件键值
-     → 返回解析任务 ID，通过 GET /api/v1/parse/status/{task_id} 查询进度
+POST /api/v1/parse/submit
+     Body: {
+       file_id: "file_xxx",                  # 必填：文件唯一ID（推荐由 Java 发 MQ 时携带）
+       task_id: "optional-task-id",          # 可选：自定义任务ID
+       doc_id/kb_id/file_path/file_type: ... # 可选：同时传入可自动 upsert 文件映射（file_path 推荐 /bucket/object_key）
+     }
+     → 返回 task_id，通过 GET /api/v1/parse/status/{task_id} 查询 PostgreSQL 持久化状态
 ```
 
 ### 知识库管理
@@ -233,15 +237,74 @@ GET    /api/v1/knowledge/search             # 混合检索（调试用）
 ### 智能问答
 
 ```
-POST /api/v1/chat/completions              # SSE 流式问答
+POST /api/v1/chat/completions              # SSE 流式问答 / 非流式问答（stream=false）
      Body: {
-       messages: [{role, content}, ...],
-       knowledge_ids: [...],
-       mode: "auto" | "simple" | "deep",
-       stream: true
+       query: "用户问题",
+       kb_ids: ["kb123"],
+       user_id: "u123",
+       chat_history: [{ role: "user" | "assistant" | "system", content: "..." }],
+       stream: true,
+       config: {
+         retrieval_mode: "hybrid" | "vector_only" | "fulltext_only",
+         qa_mode: "auto" | "simple" | "deep",
+         top_k: 10,
+         rerank: true,
+         model: "openai/qwen-max",          # 也支持 qwen-max 等别名
+         trace_enabled: true,               # 是否输出流程 trace 事件
+         trace_level: "basic" | "pro"
+       }
      }
 
-POST /api/v1/chat/query                    # 非流式问答（同步返回）
+POST /api/v1/chat/retrieve                 # 仅检索调试（返回命中文档片段）
+```
+
+SSE `event` 类型（`/chat/completions` + `stream=true`）：
+
+```
+trace      # 专业流程可视化（查询理解、路由、检索、推理、质检、完成）
+retrieval  # 检索节点结果
+reasoning  # 子问题推理状态（deep 模式）
+answer     # 增量答案 token
+citations  # 引用片段
+done       # 最终完成
+error      # 异常
+```
+
+`trace` 事件数据结构（核心字段）：
+
+```json
+{
+  "request_id": "a1b2c3d4e5f6",
+  "step": "retrieve",
+  "title": "多轮检索完成",
+  "detail": "已完成 3 轮检索，新增有效证据 12 条。",
+  "metrics": { "query_rounds": 3, "new_contexts": 12 },
+  "level": "pro",
+  "ts": 1775993358726,
+  "schema_version": "trace.v2",
+  "phase": "retrieval",
+  "status": "completed",
+  "progress": 55,
+  "timeline": { "step_index": 6, "step_total": 10 },
+  "ui_hints": { "icon": "search", "tone": "info", "collapsible_metrics": true },
+  "user_view": {
+    "headline": "多轮检索完成",
+    "message": "已完成 3 轮检索，新增有效证据 12 条。",
+    "phase": "retrieval",
+    "status": "completed",
+    "progress": 55,
+    "cards": [
+      { "label": "检索轮次", "value": 3 },
+      { "label": "有效证据", "value": 12 }
+    ]
+  },
+  "engine_view": {
+    "node": "retriever",
+    "summary": "Retrieval rounds=3, new_contexts=12, dense=18, sparse=9, bm25=11.",
+    "next_step": "reasoning",
+    "metrics": { "query_rounds": 3, "dense_hits": 18, "sparse_hits": 9 }
+  }
+}
 ```
 
 ### 系统

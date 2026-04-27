@@ -9,6 +9,34 @@ from app.services.embedding.embedder import EmbeddingService
 
 _BATCH_SIZE = 100
 _CONTENT_MAX = 8192
+_SPARSE_FALLBACK_TOP_K = 64
+
+
+def _dense_to_sparse_fallback(dense: list[float], top_k: int = _SPARSE_FALLBACK_TOP_K) -> dict[int, float]:
+    """Build a non-empty sparse vector from dense values.
+
+    DashScope embedding API returns dense vectors only. Milvus sparse field
+    rejects empty rows, so we fallback to top-k absolute dense dimensions.
+    """
+    if not dense:
+        return {0: 1e-9}
+
+    indexed = [(i, abs(float(v))) for i, v in enumerate(dense)]
+    indexed.sort(key=lambda item: abs(item[1]), reverse=True)
+
+    sparse = {i: v for i, v in indexed[:top_k] if v > 0.0}
+    if sparse:
+        return sparse
+
+    # Defensive fallback: keep at least one non-zero entry.
+    i, v = indexed[0]
+    return {i: v if v != 0.0 else 1e-9}
+
+
+def _resolve_sparse_vector(dense_vector: list[float], sparse_vector: dict[int, float]) -> dict[int, float]:
+    if sparse_vector:
+        return sparse_vector
+    return _dense_to_sparse_fallback(dense_vector)
 
 
 class MilvusIndexer:
@@ -38,9 +66,9 @@ class MilvusIndexer:
                     "heading_chain": c.heading_chain,
                     "chunk_type":    c.chunk_type,
                     "dense_vector":  e.dense_vector,
-                    "sparse_vector": e.sparse_vector,
+                    "sparse_vector": _resolve_sparse_vector(e.dense_vector, e.sparse_vector),
                 }
-                for c, e in zip(batch_chunks, batch_embs)
+                for c, e in zip(batch_chunks, batch_embs, strict=False)
             ]
 
             from app.core import milvus_client as mc

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from loguru import logger
 
 from app.agents.state import AgentState
@@ -36,8 +38,10 @@ async def retrieval_agent(state: AgentState) -> dict:
 
     seen: set[str] = {c["chunk_id"] for c in state.get("retrieved_contexts") or []}
     new_contexts: list[dict] = []
+    retrieval_traces: list[dict] = []
 
     for q in queries:
+        q_start = time.monotonic()
         try:
             result = await retriever.retrieve(
                 query=q,
@@ -45,6 +49,14 @@ async def retrieval_agent(state: AgentState) -> dict:
                 kb_ids=state["kb_ids"],
                 config=cfg,
             )
+            retrieval_traces.append({
+                "query": q,
+                "query_preview": q[:120],
+                "latency_ms": result.latency_ms,
+                "total_retrieved": result.total_retrieved,
+                "final_count": len(result.chunks),
+                "debug": result.debug or {},
+            })
             for chunk in result.chunks:
                 if chunk.chunk_id not in seen:
                     seen.add(chunk.chunk_id)
@@ -61,9 +73,19 @@ async def retrieval_agent(state: AgentState) -> dict:
                     })
         except Exception as exc:
             logger.warning("Retrieval failed for query '{}': {}", q[:60], exc)
+            retrieval_traces.append({
+                "query": q,
+                "query_preview": q[:120],
+                "latency_ms": int((time.monotonic() - q_start) * 1000),
+                "total_retrieved": 0,
+                "final_count": 0,
+                "debug": {},
+                "error": str(exc),
+            })
 
     logger.debug("retrieval_agent: {} new contexts", len(new_contexts))
     return {
         "retrieved_contexts": new_contexts,
+        "retrieval_traces": retrieval_traces,
         "retrieval_rounds": (state.get("retrieval_rounds") or 0) + 1,
     }

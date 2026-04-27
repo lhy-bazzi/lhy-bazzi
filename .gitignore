@@ -46,6 +46,8 @@ logs/
 
 # Model files (large binaries — download via scripts/download_models.py)
 models/
+!app/models/
+!app/models/*.py
 *.bin
 *.safetensors
 *.gguf

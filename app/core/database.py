@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.sql import text
 
 from app.config import get_settings
+from app.models.db_models import Base
 
 # Module-level engine and session factory (initialized on startup)
 _engine = None
@@ -44,6 +46,8 @@ async def init_db() -> None:
     # Verify connectivity
     async with _engine.connect() as conn:
         await conn.execute(text("SELECT 1"))
+    if settings.auto_create_tables:
+        await _create_tables(_engine)
     logger.info("PostgreSQL connected successfully.")
 
 
@@ -53,6 +57,13 @@ async def close_db() -> None:
     if _engine:
         await _engine.dispose()
         logger.info("PostgreSQL connection closed.")
+
+
+async def _create_tables(engine: AsyncEngine) -> None:
+    """Create Python-owned tables if they do not already exist."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("PostgreSQL schema ensured for Python-owned tables.")
 
 
 @asynccontextmanager

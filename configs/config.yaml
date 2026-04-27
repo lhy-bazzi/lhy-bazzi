@@ -19,6 +19,7 @@ database:
   max_overflow: 10
   pool_timeout: 30
   pool_recycle: 1800
+  auto_create_tables: true
 
 # ---- MinIO (Object Storage) ----
 minio:
@@ -79,7 +80,7 @@ dashscope:
 embedding:
   model: "text-embedding-v3"   # DashScope online model (no local GPU needed)
   device: "cpu"
-  batch_size: 25               # DashScope max 25 texts per request
+  batch_size: 10               # DashScope batch upper-bound for this API endpoint
   dimension: 1024
   normalize: true
   cache_ttl: 604800            # 7 days

@@ -94,9 +94,14 @@ class HybridRetriever:
 
         # 5. Application-layer permission post-filter
         filtered = self.perm.post_filter(reranked, user_ctx)
+        debug["after_permission_count"] = len(filtered)
 
         # 6. Parent context expansion
         expanded = await self._expand_parent_context(filtered)
+        debug["expanded_count"] = len(expanded)
+        debug["allowed_kb_count"] = len(user_ctx.kb_ids) if not user_ctx.is_admin else -1
+        debug["allowed_doc_count"] = len(user_ctx.doc_ids) if not user_ctx.is_admin else -1
+        debug["is_admin"] = user_ctx.is_admin
 
         latency_ms = int((time.monotonic() - t0) * 1000)
         logger.info(

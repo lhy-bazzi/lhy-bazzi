@@ -1,4 +1,4 @@
-"""Response synthesizer — stream answer generation with citations."""
+"""Response synthesizer: stream answer generation with citations."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from typing import Optional
 from app.services.retrieval.models import RetrievedChunk
 
 _SYSTEM_PROMPT = """你是企业知识库智能助手。请严格基于以下参考资料回答用户问题。
-- 如果参考资料中没有相关信息，请明确说明"根据现有资料，暂无相关信息"
-- 回答末尾用 [序号] 标注引用来源，例如 [1][3]
-- 回答简洁准确，使用中文"""
+- 如果参考资料中没有相关信息，请明确说明“根据现有资料，暂无相关信息”。
+- 回答末尾用 [序号] 标注引用来源，例如 [1][3]。
+- 回答简洁准确，使用中文。"""
 
 
 class ResponseSynthesizer:

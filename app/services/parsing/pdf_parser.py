@@ -42,7 +42,9 @@ class PDFParser(BaseParser):
         return [FileType.PDF]
 
     async def parse(self, file_path: str, **kwargs: Any) -> ParsedDocument:
-        doc_id = kwargs.get("doc_id", self._gen_id())
+        # Avoid passing duplicate `doc_id` through both explicit arg and **kwargs.
+        parse_kwargs = dict(kwargs)
+        doc_id = parse_kwargs.pop("doc_id", self._gen_id())
         filename = os.path.basename(file_path)
 
         # 1. Classify PDF type
@@ -51,7 +53,7 @@ class PDFParser(BaseParser):
 
         # 2. Parse with primary engine
         result = await self._parse_with_engine(
-            self.primary_engine, file_path, pdf_type, doc_id=doc_id, **kwargs
+            self.primary_engine, file_path, pdf_type, doc_id=doc_id, **parse_kwargs
         )
         result.quality_score = self.quality_assessor.assess(result)
         logger.info("Primary parse quality: {:.3f}", result.quality_score)
@@ -64,7 +66,7 @@ class PDFParser(BaseParser):
             )
             try:
                 fallback = await self._parse_with_engine(
-                    self.fallback_engine, file_path, pdf_type, doc_id=doc_id, **kwargs
+                    self.fallback_engine, file_path, pdf_type, doc_id=doc_id, **parse_kwargs
                 )
                 fallback_score = self.quality_assessor.assess(fallback)
                 logger.info("Fallback parse quality: {:.3f}", fallback_score)

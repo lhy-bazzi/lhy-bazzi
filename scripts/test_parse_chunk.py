@@ -1,20 +1,9 @@
 #!/usr/bin/env python
 """
-本地解析+分块调试脚本 — 无需 MinIO / Celery / 数据库。
+Local parse + chunk test script (no MinIO / Celery / database required).
 
-用法:
-    cd uni-ai-python
-    python scripts/test_parse_chunk.py <文件路径> [--kb-id <kb>] [--chunk-size <n>]
-
-示例:
-    python scripts/test_parse_chunk.py /tmp/sample.pdf
-    python scripts/test_parse_chunk.py /tmp/report.docx --chunk-size 256
-    python scripts/test_parse_chunk.py /tmp/table.xlsx --kb-id my-kb
-
-输出:
-    - 解析出的 elements（类型分布）
-    - 每个 ChunkNode 的摘要（index / type / heading_chain / token_count / 前80字）
-    - 分块统计：总数、平均/最大/最小 token
+Usage:
+    python scripts/test_parse_chunk.py <file-path> [--kb-id <kb>] [--chunk-size <n>]
 """
 
 from __future__ import annotations
@@ -24,15 +13,15 @@ import asyncio
 import os
 import sys
 import uuid
+from collections import Counter
 
-# Make sure app is importable
+# Make sure `app` is importable when running this script directly.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 async def _parse_local(file_path: str, doc_id: str) -> "ParsedDocument":  # noqa: F821
-    """Directly invoke the right parser without going through MinIO."""
+    """Directly invoke the matching parser without MinIO."""
     from app.config import get_settings
-    from app.models.enums import FileType
     from app.services.parsing.docx_parser import DocxParser
     from app.services.parsing.excel_parser import ExcelParser
     from app.services.parsing.html_parser import HTMLParser
@@ -43,44 +32,56 @@ async def _parse_local(file_path: str, doc_id: str) -> "ParsedDocument":  # noqa
 
     ext = os.path.splitext(file_path)[1].lower()
     ext_map = {
-        ".pdf": ("pdf", PDFParser(get_settings().parsing)),
-        ".docx": ("docx", DocxParser()),
-        ".xlsx": ("xlsx", ExcelParser()),
-        ".xls": ("xls", ExcelParser()),
-        ".csv": ("csv", ExcelParser()),
-        ".html": ("html", HTMLParser()),
-        ".htm": ("html", HTMLParser()),
-        ".md": ("markdown", MarkdownParser()),
-        ".markdown": ("markdown", MarkdownParser()),
-        ".txt": ("txt", TextParser()),
+        ".pdf": PDFParser(get_settings().parsing),
+        ".docx": DocxParser(),
+        ".xlsx": ExcelParser(),
+        ".xls": ExcelParser(),
+        ".csv": ExcelParser(),
+        ".html": HTMLParser(),
+        ".htm": HTMLParser(),
+        ".md": MarkdownParser(),
+        ".markdown": MarkdownParser(),
+        ".txt": TextParser(),
     }
 
-    if ext not in ext_map:
+    parser = ext_map.get(ext)
+    if parser is None:
         raise ValueError(f"Unsupported extension: {ext}")
 
-    _, parser = ext_map[ext]
     result = await parser.parse(file_path, doc_id=doc_id)
-
     if result.quality_score == 0.0:
         result.quality_score = QualityAssessor().assess(result)
-
     return result
 
 
 def _print_section(title: str) -> None:
     print(f"\n{'=' * 60}")
     print(f"  {title}")
-    print('=' * 60)
+    print("=" * 60)
+
+
+def _safe_console_text(text: str) -> str:
+    enc = sys.stdout.encoding or "utf-8"
+    return text.encode(enc, errors="replace").decode(enc, errors="replace")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Local parse + chunk tester")
     ap.add_argument("file", help="Local file to parse (pdf/docx/xlsx/md/txt/html)")
     ap.add_argument("--kb-id", default="test-kb", help="Knowledge-base ID (default: test-kb)")
-    ap.add_argument("--chunk-size", type=int, default=512, help="Target chunk size in tokens (default: 512)")
+    ap.add_argument(
+        "--chunk-size",
+        type=int,
+        default=512,
+        help="Target chunk size in tokens (default: 512)",
+    )
     ap.add_argument("--max-chunk-size", type=int, default=1024)
     ap.add_argument("--overlap", type=int, default=64)
-    ap.add_argument("--show-content", action="store_true", help="Print full chunk content instead of 80-char preview")
+    ap.add_argument(
+        "--show-content",
+        action="store_true",
+        help="Print full chunk content instead of a short preview",
+    )
     args = ap.parse_args()
 
     if not os.path.isfile(args.file):
@@ -106,7 +107,6 @@ def main() -> None:
     print(f"  Quality: {parsed.quality_score:.3f}")
     print(f"  Elements: {len(parsed.elements)}")
 
-    from collections import Counter
     type_counts = Counter(e.element_type.value for e in parsed.elements)
     for etype, cnt in sorted(type_counts.items()):
         print(f"    {etype:12s}: {cnt}")
@@ -119,25 +119,32 @@ def main() -> None:
     print(f"  Total chunks: {len(nodes)}")
     if nodes:
         sizes = [n.token_count for n in nodes]
-        print(f"  Tokens  avg={sum(sizes)/len(sizes):.0f}  min={min(sizes)}  max={max(sizes)}")
+        print(f"  Tokens  avg={sum(sizes) / len(sizes):.0f}  min={min(sizes)}  max={max(sizes)}")
 
     type_dist = Counter(n.chunk_type for n in nodes)
-    for ct, cnt in sorted(type_dist.items()):
-        print(f"    {ct:10s}: {cnt} chunks")
+    for chunk_type, cnt in sorted(type_dist.items()):
+        print(f"    {chunk_type:10s}: {cnt} chunks")
 
     # ---- Per-chunk detail ----
     _print_section("CHUNK DETAIL")
     for n in nodes:
         chain = n.heading_chain or "(no heading)"
-        preview = n.content if args.show_content else (n.content[:8000].replace("\n", " ") + ("…" if len(n.content) > 8000 else ""))
-        has_parent = "✓" if n.parent_content else "✗"
+        has_parent = "Y" if n.parent_content else "N"
+
+        if args.show_content:
+            preview = n.content
+        else:
+            preview = n.content[:8000].replace("\n", " ")
+            if len(n.content) > 8000:
+                preview += "..."
+
         print(
             f"[{n.chunk_index:03d}] {n.chunk_type:6s} "
             f"tok={n.token_count:4d} "
             f"parent={has_parent} "
             f"chain={chain!r}"
         )
-        print(f"       {preview}")
+        print(f"       {_safe_console_text(preview)}")
         print()
 
 

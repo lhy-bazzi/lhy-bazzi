@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import pickle
 from dataclasses import dataclass
-from typing import Optional
 
 from loguru import logger
 
 from app.services.embedding.model_manager import EmbeddingModelManager
+
+_DASHSCOPE_MAX_BATCH_SIZE = 10
 
 
 @dataclass
@@ -25,6 +26,14 @@ class EmbeddingService:
         self.model_manager = model_manager
         self.redis = redis_client
         self.batch_size: int = settings.embedding.batch_size
+        self.api_batch_size: int = min(self.batch_size, _DASHSCOPE_MAX_BATCH_SIZE)
+        if self.batch_size > _DASHSCOPE_MAX_BATCH_SIZE:
+            logger.warning(
+                "embedding.batch_size={} exceeds DashScope limit {}, fallback to {}",
+                self.batch_size,
+                _DASHSCOPE_MAX_BATCH_SIZE,
+                self.api_batch_size,
+            )
         self.cache_ttl: int = settings.embedding.cache_ttl
         self._cache_prefix = "emb:"
 
@@ -39,7 +48,7 @@ class EmbeddingService:
             return []
 
         keys = [self._cache_key(t) for t in texts]
-        results: list[Optional[EmbeddingResult]] = [None] * len(texts)
+        results: list[EmbeddingResult | None] = [None] * len(texts)
 
         # 1. Cache lookup
         if use_cache:
@@ -56,7 +65,7 @@ class EmbeddingService:
 
             # 3. Fill results + write cache
             pipe_data: list[tuple[str, bytes]] = []
-            for idx, emb in zip(miss_indices, embeddings):
+            for idx, emb in zip(miss_indices, embeddings, strict=False):
                 results[idx] = emb
                 pipe_data.append((keys[idx], pickle.dumps(emb)))
 
@@ -81,10 +90,10 @@ class EmbeddingService:
         cfg = self.model_manager  # EmbeddingModelManager holds DashScope config
         results: list[EmbeddingResult] = []
 
-        for start in range(0, len(texts), self.batch_size):
-            batch = texts[start: start + self.batch_size]
+        for start in range(0, len(texts), self.api_batch_size):
+            batch = texts[start: start + self.api_batch_size]
             logger.debug("DashScope embed batch {}/{} ({} texts)",
-                         start // self.batch_size + 1, -(-len(texts) // self.batch_size), len(batch))
+                         start // self.api_batch_size + 1, -(-len(texts) // self.api_batch_size), len(batch))
 
             payload = {
                 "model": cfg.embedding_model,
@@ -120,7 +129,7 @@ class EmbeddingService:
         h = hashlib.sha256(text.encode()).hexdigest()
         return self._cache_prefix + h
 
-    async def _mget(self, keys: list[str]) -> list[Optional[bytes]]:
+    async def _mget(self, keys: list[str]) -> list[bytes | None]:
         try:
             # redis_client uses decode_responses=True, so we need raw bytes client
             # Fall back to individual gets if pipeline unavailable

@@ -21,6 +21,7 @@ class AgentState(TypedDict):
 
     # Retrieval
     retrieved_contexts: Annotated[list, operator.add]
+    retrieval_traces: Annotated[list[dict], operator.add]
     retrieval_rounds: int
 
     # Reasoning

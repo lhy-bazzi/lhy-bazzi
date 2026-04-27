@@ -7,6 +7,8 @@ Individual clients are importable directly from their modules.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from loguru import logger
 
 from app.core.database import close_db, init_db
@@ -104,9 +106,15 @@ async def init_all_services() -> None:
 
         # Register parse queue handler → dispatches to Celery
         async def _handle_parse_message(body: dict) -> None:
+            from app.core.mq_consumer import ParseTaskMessage
             from app.tasks.parse_task import process_parse_task
-            logger.info("MQ parse message received: doc_id={}", body.get("doc_id"))
-            process_parse_task.delay(body)
+
+            payload = ParseTaskMessage.model_validate(body)
+            task_id = (payload.task_id or uuid4().hex)[:64]
+            message = {"task_id": task_id, "file_id": payload.file_id}
+
+            logger.info("MQ parse message received: task_id={} file_id={}", task_id, payload.file_id)
+            process_parse_task.apply_async(args=[message], task_id=task_id)
 
         parse_queue = get_settings().mq.parse_queue
         consumer.register_handler(parse_queue, _handle_parse_message)
